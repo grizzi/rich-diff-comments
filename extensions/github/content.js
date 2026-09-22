@@ -77,14 +77,6 @@
 
   // ── GitHub API ─────────────────────────────────────────────────────────────
 
-  function getGitHubToken() {
-    return localStorage.getItem("grdc_github_token");
-  }
-
-  function setGitHubToken(token) {
-    localStorage.setItem("grdc_github_token", token);
-  }
-
   // Try to discover the head/base commit SHAs from the page DOM.
   function discoverCommitOids() {
     const oids = { head: null, base: null };
@@ -260,52 +252,13 @@
     }
   }
 
-  // PAT-based fallback (kept for compatibility / opt-in)
-  async function postReviewCommentApi(path, line, body, opts) {
-    const token = getGitHubToken();
-    if (!token) {
-      promptForToken();
-      return { ok: false, error: "No token configured" };
-    }
-    opts = opts || {};
-    const startLine = (opts.startLine != null && opts.startLine < line) ? opts.startLine : null;
-
-    if (!prInfo.commitId) {
-      const res0 = await fetch(
-        `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.pullNumber}`,
-        { headers: { Authorization: `token ${token}`, Accept: "application/vnd.github.v3+json" } }
-      );
-      if (res0.ok) prInfo.commitId = (await res0.json()).head.sha;
-    }
-
-    const res = await fetch(
-      `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.pullNumber}/comments`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `token ${token}`,
-          Accept: "application/vnd.github.v3+json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          body, commit_id: prInfo.commitId, path, line, side: "RIGHT",
-          ...(startLine != null ? { start_line: startLine, start_side: "RIGHT" } : {}),
-        }),
-      }
-    );
-
-    if (!res.ok) {
-      const err = await res.json();
-      return { ok: false, error: err.message || `HTTP ${res.status}` };
-    }
-    return { ok: true };
-  }
-
-  // Default: use internal endpoint (session cookies). Set localStorage 'grdc_use_pat' = '1' to use PAT.
+  // Comments are posted through GitHub's internal page_data endpoint using the
+  // browser's existing session cookies. There is deliberately no Personal Access
+  // Token path: a `repo`-scoped PAT grants access to every private repository the
+  // account can reach, and the only place a content script could keep one is
+  // `localStorage`, which is shared with the page and with every other extension
+  // on the github.com origin.
   async function postReviewComment(path, line, body, opts) {
-    if (localStorage.getItem("grdc_use_pat") === "1") {
-      return postReviewCommentApi(path, line, body, opts);
-    }
     return postReviewCommentInternal(path, line, body, opts);
   }
 
@@ -769,7 +722,7 @@
       if (!dropdown) return;
       dropdown.innerHTML = matches.slice(0, 8).map((u, i) => `
         <div class="grdc-mention-item${i === activeIdx ? ' grdc-mention-active' : ''}" data-i="${i}">
-          ${u.avatarUrl ? `<img class="grdc-mention-avatar" src="${u.avatarUrl}" alt="">` : '<span class="grdc-mention-avatar"></span>'}
+          ${u.avatarUrl ? `<img class="grdc-mention-avatar" src="${escapeHtml(u.avatarUrl)}" alt="">` : '<span class="grdc-mention-avatar"></span>'}
           <strong>${escapeHtml(u.login)}</strong>
           ${u.name ? `<span class="grdc-mention-name">${escapeHtml(u.name)}</span>` : ''}
         </div>
@@ -851,23 +804,18 @@
     });
   }
 
-  // ── Token Prompt ───────────────────────────────────────────────────────────
+  // ── Line Number Mapping ────────────────────────────────────────────────────
 
-
-  function promptForToken() {
-    const existing = getGitHubToken();
-    const token = prompt(
-      "Markdown PR — Markdown PR Comments for GitHub needs a Personal Access Token (PAT) with 'repo' scope.\n\n" +
-        "Create one at: https://github.com/settings/tokens\n\n" +
-        "Enter your token:",
-      existing || ""
-    );
-    if (token && token.trim()) {
-      setGitHubToken(token.trim());
+  // Decode HTML entities in text scraped off a fetched page. Deliberately not
+  // `div.innerHTML = s` — a detached div created from `document` still loads
+  // images and fires `onerror`. DOMParser yields an inert document.
+  function decodeEntities(s) {
+    try {
+      return new DOMParser().parseFromString(String(s), 'text/html').documentElement.textContent || '';
+    } catch (_) {
+      return '';
     }
   }
-
-  // ── Line Number Mapping ────────────────────────────────────────────────────
 
   // Cached route data from /changes endpoint
   let routeData = null;
@@ -1301,9 +1249,7 @@
       // Strategy A: read-only textarea (older blob views)
       let m = html.match(/<textarea[^>]*id=["']read-only-cursor-text-area["'][^>]*>([\s\S]*?)<\/textarea>/);
       if (m) {
-        const div = document.createElement('div');
-        div.innerHTML = m[1];
-        const text = div.textContent || '';
+        const text = decodeEntities(m[1]);
         if (text) {
           rawSourceCache.set(path, text);
           console.log(`[GRDC] Fetched raw source via textarea for ${path}: ${text.length} chars`);
@@ -1318,9 +1264,7 @@
         // Quick filter: skip scripts that don't look promising
         if (!scriptMatch[1].includes('rawLines') && !scriptMatch[1].includes('rawBlob')) continue;
         try {
-          const div = document.createElement('div');
-          div.innerHTML = scriptMatch[1];
-          const json = JSON.parse(div.textContent);
+          const json = JSON.parse(decodeEntities(scriptMatch[1]));
           // Walk the JSON tree looking for { rawLines: [...] } or { rawBlob: "..." }
           const found = findBlobInJson(json);
           if (found) {
@@ -2523,7 +2467,7 @@
       // src/lib/roles.js so it can be unit-tested.
       const roleLabel = window.GRDC.roleLabel(c.authorAssociation);
       const roleMarkup = roleLabel
-        ? `<span class="grdc-comment-role grdc-comment-role-${c.authorAssociation.toLowerCase()}">${roleLabel}</span>`
+        ? `<span class="grdc-comment-role grdc-comment-role-${escapeHtml(c.authorAssociation.toLowerCase())}">${escapeHtml(roleLabel)}</span>`
         : '';
       // "Author" pill — render when the comment author is the PR opener.
       // Separate from the role pill so both can appear (GitHub native UI

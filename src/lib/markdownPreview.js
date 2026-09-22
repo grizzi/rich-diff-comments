@@ -26,7 +26,23 @@
     return String(s)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // Link and image targets end up in `href` / `src`. Allow only schemes that
+  // navigate or load, so `[x](javascript:...)` in a draft can't execute when
+  // the author hits Preview. Scheme-less (relative) URLs are left alone.
+  // Runs after escapeHtmlText, so an entity-encoded scheme is already inert.
+  const SAFE_URL_SCHEMES = ['http', 'https', 'mailto'];
+  function safeUrl(url) {
+    const raw = String(url == null ? '' : url).trim();
+    // Control characters and whitespace can split a scheme ("java\tscript:"),
+    // so strip them before probing.
+    const scheme = raw.replace(/[\u0000-\u0020]/g, '').toLowerCase().match(/^([a-z][a-z0-9+.-]*):/);
+    if (scheme && !SAFE_URL_SCHEMES.includes(scheme[1])) return 'about:blank';
+    return raw;
   }
 
   function renderMarkdownPreview(src) {
@@ -72,9 +88,10 @@
 
     // 5. Inline: images BEFORE links (so `![alt](src)` doesn't get eaten by
     //    the link regex), then bold / italic / strike / autolinks.
-    s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2">');
+    s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g,
+      (_m, alt, src) => `<img alt="${alt}" src="${safeUrl(src)}">`);
     s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      (_m, text, href) => `<a href="${safeUrl(href)}" target="_blank" rel="noopener noreferrer">${text}</a>`);
     s = s.replace(/&lt;(https?:\/\/[^\s&]+)&gt;/g,
       '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
     s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');

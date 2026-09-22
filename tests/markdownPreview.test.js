@@ -30,8 +30,10 @@ test('inline code is not transformed', () => {
 test('fenced code block keeps content intact and adds language class', () => {
   const html = renderMarkdownPreview('```python\nprint("hi <b>")\n```');
   assert.match(html, /<pre><code class="language-python">/);
-  // Content should be HTML-escaped, not rendered
-  assert.match(html, /print\("hi &lt;b&gt;"\)/);
+  // Content should be HTML-escaped, not rendered. Quotes escape to `&quot;`
+  // too — they render identically inside <code>, and the same escaper feeds
+  // double-quoted href/src attributes, where an unescaped quote breaks out.
+  assert.match(html, /print\(&quot;hi &lt;b&gt;&quot;\)/);
 });
 
 test('links and images (image regex runs before link — bug fix)', () => {
@@ -105,4 +107,67 @@ test('XSS attempt inside fenced code is rendered as text, not as a tag', () => {
   const html = renderMarkdownPreview('```\n<script>alert(1)</script>\n```');
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(html, /<script>/);
+});
+
+// ---------------------------------------------------------------------------
+// Attribute-injection regressions
+//
+// `escapeHtmlText` used to leave `"` alone while the image and link rules
+// interpolated straight into double-quoted attributes, so a draft could close
+// the attribute and add an event handler. Targets are also scheme-checked.
+// ---------------------------------------------------------------------------
+
+// Parse the output and inspect real attributes: the escaped text still
+// *contains* the substring `onerror=`, but as inert characters inside a
+// quoted value, so a raw string match would be the wrong assertion.
+function attrNames(html) {
+  const { JSDOM } = require('jsdom');
+  const root = new JSDOM(`<div id="r">${html}</div>`).window.document.getElementById('r');
+  return [...root.querySelectorAll('*')].flatMap((el) => [...el.attributes].map((a) => a.name));
+}
+
+test('image alt cannot break out of the alt attribute', () => {
+  const html = renderMarkdownPreview('![x" onerror="alert(1)](y)');
+  assert.ok(!attrNames(html).includes('onerror'), `unexpected handler in: ${html}`);
+  assert.match(html, /&quot;/);
+});
+
+test('image src cannot break out of the src attribute', () => {
+  const html = renderMarkdownPreview('![a](x" onerror="alert(1))');
+  assert.ok(!attrNames(html).includes('onerror'), `unexpected handler in: ${html}`);
+});
+
+test('link href cannot break out of the href attribute', () => {
+  const html = renderMarkdownPreview('[a](x" onmouseover="alert(1))');
+  assert.ok(!attrNames(html).includes('onmouseover'), `unexpected handler in: ${html}`);
+});
+
+test('no draft text can introduce an event-handler attribute', () => {
+  const drafts = [
+    '![x" onerror="alert(1)](y)',
+    '[a](x" onmouseover="alert(1))',
+    '![a](x" onload="alert(1))',
+    '# h" onclick="alert(1)',
+    '**b" onfocus="alert(1)**',
+  ];
+  for (const d of drafts) {
+    const handlers = attrNames(renderMarkdownPreview(d)).filter((n) => n.startsWith('on'));
+    assert.deepEqual(handlers, [], `draft produced handlers ${handlers}: ${d}`);
+  }
+});
+
+test('javascript: targets are neutralised', () => {
+  assert.match(renderMarkdownPreview('[a](javascript:alert(1))'), /href="about:blank"/);
+  assert.match(renderMarkdownPreview('![a](javascript:alert(1))'), /src="about:blank"/);
+});
+
+test('control characters cannot smuggle a blocked scheme', () => {
+  assert.match(renderMarkdownPreview('[a](java\tscript:alert(1))'), /href="about:blank"/);
+  assert.match(renderMarkdownPreview('[a](  JaVaScRiPt:alert(1))'), /href="about:blank"/);
+});
+
+test('safe and relative targets are left alone', () => {
+  assert.match(renderMarkdownPreview('[a](https://example.com/x)'), /href="https:\/\/example\.com\/x"/);
+  assert.match(renderMarkdownPreview('[a](../docs/README.md)'), /href="\.\.\/docs\/README\.md"/);
+  assert.match(renderMarkdownPreview('[a](mailto:x@y.z)'), /href="mailto:x@y\.z"/);
 });

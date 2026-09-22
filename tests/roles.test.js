@@ -97,3 +97,11 @@ test('isPRAuthor — non-string input returns false (no throw)', () => {
   assert.equal(isPRAuthor('alice', 42), false);
   assert.equal(isPRAuthor({}, 'alice'), false);
 });
+
+test('roleLabel — inherited Object.prototype keys are not treated as roles', () => {
+  // A bare `ROLE_LABELS[x]` lookup resolves these to truthy inherited values,
+  // which would render a stringified function into the comment header.
+  for (const key of ['constructor', 'toString', 'valueOf', '__proto__', 'hasOwnProperty']) {
+    assert.equal(roleLabel(key), null, `expected null for inherited key ${key}`);
+  }
+});

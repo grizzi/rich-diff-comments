@@ -40,7 +40,11 @@
   // or `null` if the value isn't one we render a pill for.
   function roleLabel(authorAssociation) {
     if (typeof authorAssociation !== 'string') return null;
-    return ROLE_LABELS[authorAssociation] || null;
+    // Own-property lookup only: a plain object literal inherits from
+    // Object.prototype, so a bare `ROLE_LABELS[x]` would resolve keys like
+    // `constructor` or `toString` to truthy inherited values.
+    if (!Object.prototype.hasOwnProperty.call(ROLE_LABELS, authorAssociation)) return null;
+    return ROLE_LABELS[authorAssociation];
   }
 
   // Is the commenter the PR opener? Case-insensitive match; both args
